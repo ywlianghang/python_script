@@ -1,0 +1,246 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+# @Time    : 2019/7/10 9:43
+# @Author  : zhibo.shi
+# @Email   : 251525043@qq.com
+# @File    : mysql_backup.py
+# @Software: PyCharm
+
+import torndb
+import paramiko
+import logging
+import datetime
+import multiprocessing
+import traceback
+import sys;
+import os
+reload(sys);
+sys.setdefaultencoding("utf8")
+
+
+NOW=datetime.datetime.now().strftime('%Y-%m-%d_%H:%M:%S')
+THIS_DATE=datetime.datetime.now().strftime('%Y%m%d')
+
+logging.basicConfig(level = logging.INFO,format = '%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+
+def ssh_exec(ip,port,username,password,command):
+    logging.info('{} Starting Command......  {}'.format(ip, command))
+    private_key = paramiko.RSAKey.from_private_key_file('/root/.ssh/id_rsa')
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.connect(hostname=ip, port=port, username=username, pkey=private_key, timeout=5)
+    cmd = '. /etc/profile;'+command
+    stdin, stdout, stderr = ssh.exec_command(cmd)
+    info_stdout = stdout.read().decode('utf-8').strip()
+    info_error = stderr.read().decode('utf-8').strip()
+    recode = 0
+    if info_error:
+        recode = 1
+        logging.error( '{0}  return: {1} :   info_error: {2}    command: {3}'.format(ip, recode, info_error, command))
+    if info_stdout:
+        logging.info('{0}  return: {1} :   info_stdout: {2}    command: {3}'.format(ip, recode, info_stdout, command))
+    ssh.close()
+    return info_stdout,info_error,recode
+
+def ssh_exec_simple(ip, command):
+    info_stdout, info_error, recode = ssh_exec(ip, 22, 'dba', 'dba!@#456', command)
+    return info_stdout, info_error, recode
+
+class MysqlUtils(object):
+    def __init__(self, user, password, database, host):
+        self.user = user
+        self.password = password
+        self.host = host
+        self.database = database
+        self.db = torndb.Connection(user=self.user, password=self.password, database=self.database, host=self.host)
+
+    def query(self, sql):
+        res = self.db.query(sql)
+        return res
+    def get(self,sql):
+        res = self.db.get(sql)
+        return res
+
+    @staticmethod
+    def local_backup(ip):
+        d = datetime.datetime.now()
+        now = d.strftime('%Y-%m-%d_%H:%M:%S')
+        backup_busi, backup_ip, backup_file_path, backup_status, upload_status, other_error = GaeaUtils.get_second_path(ip),ip,'','','',''
+        backup_dir = '/data/backup'
+        try:
+            #创建本地备份目录：
+            info_stdout, info_error, recode = ssh_exec_simple(ip, 'sudo mkdir -p {0}; sudo chmod -R 777 {0}'.format(backup_dir))
+            #备份相关参数设置：
+            mysqldump_error_log = '{}/{}_{}'.format(backup_dir,THIS_DATE,'error_log_mysqldump.log')
+            gzip_error_log = '{}/{}_{}'.format(backup_dir,THIS_DATE, 'error_log_gzip.log')
+            db_file = '{}/db_{}_all_{}.sql.gz'.format(backup_dir, ip, now)
+            db_file_md5 = '{}.md5'.format(db_file)
+            #command = ''' cd {0}; mysqldump -h127.0.0.1 -uptkill -pptkillabc123 --max-allowed-packet=167772160  --single-transaction --master-data=2 --triggers --routines  --all-databases 2>{1}  | gzip | openssl des3 -salt -k quanshi  > {2}  2>{3} '''.format(
+            command = ''' cd {0}; mysqldump -h127.0.0.1 -uptkill -pptkillabc123 --max-allowed-packet=167772160  --single-transaction --master-data=2 --triggers --routines  --all-databases 2>{1}  | gzip  > {2}  2>{3} '''.format(
+                backup_dir, mysqldump_error_log, db_file, gzip_error_log)
+            if ip == '192.168.97.51':
+                db_file =  '{}/db_{}_all_{}_no_master-data2.sql.gz'.format(backup_dir, ip, now)
+                #command = ''' cd {0}; mysqldump -h127.0.0.1 -uptkill -pptkillabc123 --max-allowed-packet=167772160  --single-transaction  --triggers --routines  --all-databases 2>{1} | gzip | openssl des3 -salt -k quanshi  > {2}  2>{3} '''.format(
+                command = ''' cd {0}; mysqldump -h127.0.0.1 -uptkill -pptkillabc123 --max-allowed-packet=167772160  --single-transaction  --triggers --routines  --all-databases 2>{1} | gzip  > {2}  2>{3} '''.format(
+                    backup_dir, mysqldump_error_log, db_file, gzip_error_log)
+            if ip == '10.156.70.125':
+                db_file = '{}/db_{}_all_{}_no_single-transaction.sql.gz'.format(backup_dir, ip, now)
+                #command = ''' cd {0}; mysqldump -h127.0.0.1 -uptkill -pptkillabc123 --max-allowed-packet=167772160  --master-data=2  --triggers --routines  --all-databases 2>{1} | gzip | openssl des3 -salt -k quanshi  > {2}  2>{3} '''.format(
+                command = ''' cd {0}; mysqldump -h127.0.0.1 -uptkill -pptkillabc123 --max-allowed-packet=167772160  --master-data=2  --triggers --routines  --all-databases 2>{1} | gzip  > {2}  2>{3} '''.format(
+                    backup_dir, mysqldump_error_log, db_file, gzip_error_log)
+            if ip == '192.168.5.108':
+                db_file = '{}/db_{}_all_{}_some_db.sql.gz'.format(backup_dir, ip, now)
+                #command = ''' cd {0}; mysqldump -h127.0.0.1 -uptkill -pptkillabc123 --max-allowed-packet=167772160   --single-transaction --master-data=2  --triggers --routines  --databases archery inception mysql 2>{1} | gzip | openssl des3 -salt -k quanshi  > {2}  2>{3} '''.format(
+                command = ''' cd {0}; mysqldump -h127.0.0.1 -uptkill -pptkillabc123 --max-allowed-packet=167772160   --single-transaction --master-data=2  --triggers --routines  --databases archery inception mysql 2>{1} | gzip  > {2}  2>{3} '''.format(
+                    backup_dir, mysqldump_error_log, db_file, gzip_error_log)
+
+            #开始进行DB备份
+            info_stdout, info_error, recode = ssh_exec_simple(ip, command)
+            # 检测返回码，判断备份是否成功
+            if recode !=0:
+                # 备份失败!!!!!!!
+                logging.error('{0}  mysqldump Error !!!!!!!!!!!!!!!! :  {1}'.format(ip, info_stdout))
+                backup_status = 'fail'
+            #检测错误日志，分析备份是否成功
+            else:
+                info_stdout, info_error, recode = ssh_exec_simple(ip, '''cat {0} | grep -v 'mysqldump: \[Warning\]' | grep 'mysqldump:' '''.format(mysqldump_error_log))
+                if info_stdout:
+                    #备份失败!!!!!!!
+                    logging.error('{0}  mysqldump Error !!!!!!!!!!!!!!!! :  {1}'.format(ip,info_stdout))
+                    backup_status = 'fail'
+                else:
+                    #备份成功
+                    logging.info( '{0}  mysqldump Success !'.format(ip))
+                    backup_status = 'ok'
+                    #备份成功，开始校验md5
+                    md5_command = 'md5sum {0} > {1}'.format(db_file,db_file_md5)
+                    info_stdout, info_error, recode = ssh_exec_simple(ip, md5_command)
+                    #备份成功，则开始上传文件：
+                    second_path = GaeaUtils.get_second_path(ip)
+                    backup_file_path = 'test/{}/{}/{}'.format(THIS_DATE,second_path,db_file.split("/")[-1])
+                    #创建ftp目录：
+                    lftp_mkdir_command = '''echo $LANG;lftp -u backdb,backdb ftp://192.168.5.107/test << EOF
+mkdir {}
+cd {}
+mkdir {}
+cd {}
+EOF
+'''.format(THIS_DATE, THIS_DATE, second_path, second_path)
+                    info_stdout, info_error, recode = ssh_exec_simple(ip, lftp_mkdir_command)
+
+                    #ftp上传DB备份和md5文件
+                    lftp_upload_command = '''lftp -u backdb,backdb ftp://192.168.5.107/test << EOF
+cd {}
+cd {}
+put {}
+put {}
+EOF
+'''.format(THIS_DATE, second_path, db_file, db_file_md5)
+                    info_stdout, info_error, recode = ssh_exec_simple(ip, lftp_upload_command)
+                    if recode==0:
+                        #上传成功
+                        logging.info('{} uoload is ok :  {} '.format(ip, db_file))
+                        upload_status = 'ok'
+                    else:
+                        #上传失败
+                        logging.error('{} uoload is fail :  {} '.format(ip, db_file))
+                        upload_status = 'fail'
+
+
+
+            #清理文件：db备份文件和md5文件:
+            rm_command = 'rm -f {} {}'.format(db_file, db_file_md5)
+            info_stdout, info_error, recode = ssh_exec_simple(ip,rm_command)
+            GaeaUtils.log_backup_history(datetime.datetime.now(), backup_busi, backup_ip, backup_file_path, backup_status, upload_status,other_error)
+        except Exception, e:
+            #traceback.print_exc()
+            #logger.error(e.message)
+            logger.error(str(e))
+            other_error = str(e)
+            GaeaUtils.log_backup_history(datetime.datetime.now(), backup_busi, backup_ip, backup_file_path, backup_status,upload_status,other_error)
+
+
+
+class GaeaUtils(object):
+    @staticmethod
+    def get_mysql_backup_ip():
+        backup_ip = []
+        sql = '''
+                    select DISTINCT backup_ip from (
+                    select  backup_ip  from cmdb_assethost where node_tags like 'mysql%%' and node_tags not like 'mysql-slave%%' and id in (select assethost_id from cmdb_assethost_node_primary where  primarynode_id='c002dd9d5a34443b95ed81d3c4fc7d60') and backup_ip != '-' and backup_ip is not null
+                    union
+                    select  backup_ip  from cmdb_awsasset where  node_tags like 'mysql%%' and node_tags not like 'mysql-slave%%' and  backup_ip != '-' and backup_ip is not null
+                    union
+                    select  backup_ip  from cmdb_physicalhost where  node_tags like 'mysql%%' and node_tags not like 'mysql-slave%%' and  backup_ip != '-' and backup_ip is not null
+                    ) all_host ;
+                '''
+        try:
+            gaea_db = MysqlUtils('ptkill','ptkillabc123','gaea', '192.168.5.19:3306')
+            res = gaea_db.query(sql)
+            for r in res:
+                backup_ip.append(r.backup_ip)
+            logger.info(backup_ip)
+        except Exception, e:
+            logger.error(e.message)
+
+        return backup_ip
+
+    @staticmethod
+    def get_second_path(backup_ip):
+        second_path = ''
+        sql = '''
+                select DISTINCT name from cmdb_secoundnode where id in(
+                select secoundnode_id from cmdb_awsasset_node_secound where awsasset_id in(select id from cmdb_awsasset where backup_ip ='{0}')
+                UNION
+                select secoundnode_id from cmdb_assethost_node_secound where assethost_id in(select id from cmdb_assethost where backup_ip ='{0}')
+                UNION
+                select secoundnode_id from cmdb_physicalhost_node_secound where physicalhost_id in(select id from cmdb_physicalhost where backup_ip ='{0}')
+                ) limit 1
+            '''.format(backup_ip)
+        try:
+            gaea_db = MysqlUtils('ptkill','ptkillabc123','gaea', '192.168.5.19:3306')
+            res = gaea_db.get(sql)
+            for r in res:
+                second_path = res.name
+            logger.info('{}  second_path: {}'.format(backup_ip,second_path))
+        except Exception, e:
+            logger.error(e.message)
+        return second_path
+
+    @staticmethod
+    def log_backup_history(backup_date,backup_busi,backup_ip,backup_file_path,backup_status,upload_status,other_error):
+        sql = 'insert into backup_history (backup_date,backup_busi,backup_ip,backup_file_path,backup_status,upload_status,other_error) values (%s,%s,%s,%s,%s,%s,%s)'
+        try:
+            gaea_db = MysqlUtils('ptkill','ptkillabc123','gaea', '192.168.5.19:3306')
+            gaea_db.db.insert(sql,backup_date,backup_busi,backup_ip,backup_file_path,backup_status,upload_status,other_error)
+
+        except Exception, e:
+            logger.error(e.message)
+
+
+
+#列表顺序备份
+def backup_mysql_list(li):
+    for ip in li:
+        logging.info(ip)
+        MysqlUtils.local_backup(ip)
+
+#多线程备份，大列表分割成容量15的小列表
+def backup_mysql_list_muti(backup_ip_all):
+    logging.info('ALL BACKUP IP:   {}'.format(backup_ip_all))
+    list_size = 1  # 每个列表容纳15个IP
+    backup_ips = [backup_ip_all[i:i + list_size] for i in range(0, len(backup_ip_all), list_size)]  # 分割成多个IP列表，每个列表的容量list_size
+    for li in backup_ips:
+        logging.info(' ----  SPLITE BACKUP IP:   {}'.format(li))
+        p = multiprocessing.Process(target=backup_mysql_list, args=(li,))
+        p.daemon = False
+        p.start()
+
+
+if __name__ == '__main__':
+    backup_ip_all = GaeaUtils.get_mysql_backup_ip()  # 从Gaes获取备份列表
+    backup_mysql_list_muti(backup_ip_all)
+
+
