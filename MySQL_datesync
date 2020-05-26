@@ -1,0 +1,307 @@
+
+#-*- coding: utf8 -*-
+
+"""
+Author:     hang.liang
+Contact:    ywlianghang@gmail.com
+Date:       2019-05-10 released
+"""
+
+import sys
+reload(sys)
+sys.setdefaultencoding('utf8')
+
+import MySQLdb as mysqldb
+#import pymysql as mysqldb
+import sys
+from difflib import *
+
+class datesync():
+
+    def __init__(self):
+        self.tableName = []
+        self.sourceTableList = []
+        self.destTableList = []
+        self.stringColums = ''
+        self.syncNumber = 10
+        self.tableStructureString = ''
+        self.tableStructureList = []
+        self.tableStructureDict = {}
+        self.tableValueString = ''
+        self.tableValueList = []
+        self.primaryKeyId = ''
+        self.get_argv()
+        self.DBtableName()
+
+    def __str__(self):
+        pass
+
+    def printParameter(self):
+        """输出参数使用规则实力
+        示例：
+        python datesync.py --source -h=127.0.0.1,-u=root,-p=123456,-P=3306,-D=test --dest -h=127.0.0.1,-uroot,-p123456,-P=3305,-D=test,-t=datetable
+        """
+        self.Parameter = """
+        --source   指定原数据库
+        --dest     指定目标数据库
+        -h         指定数据库的连接地址
+        -u         指定连接数据库的用户名
+        -p         指定来凝结数据库的密码
+        -P         指定数据库的端口，默认为3306
+        --d         指定要备份的库，如果操作多个可以用,分割
+        --t         指定要备份的表，如果操作多个可以用，分割
+        --n        指定每次同步的数据条数，以条为单位，默认100条
+        """
+        print (self.Parameter)
+        print('示例：python datesync.py --source -h=127.0.0.1,-u=root,-p=123456,-P=3306, --d test --dest -h=127.0.0.1,-u=root,-p=123456,-P=3305,--d test,-ttdatetable --n 100')
+
+    def get_argv(self):
+        """获取用户输入的数据库连接信息"""
+        try:
+            for arg in sys.argv:
+                if '--source' in arg and arg.count('--source') == 1:
+                    for parameter in sys.argv[sys.argv.index('--source')+1].split(','):
+                        if parameter.split('=')[0] == '-h':
+                           self.source_host = parameter.split('=')[1]
+                        elif parameter.split('=')[0] == '-p':
+                            self.source_password = parameter.split('=')[1]
+                        elif parameter.split('=')[0] == '-P':
+                            self.source_port = int(parameter.split('=')[1])
+                        elif parameter.split('=')[0] == '-u':
+                            self.source_user = parameter.split('=')[1]
+
+                elif '--dest' in arg and arg.count('--dest') == 1:
+                    for parameter in sys.argv[sys.argv.index('--dest')+1].split(','):
+                        if parameter.split('=')[0] == '-h':
+                           self.dest_host = parameter.split('=')[1]
+                        elif parameter.split('=')[0] == '-p':
+                            self.dest_password = parameter.split('=')[1]
+                        elif parameter.split('=')[0] == '-P':
+                            self.dest_port = int(parameter.split('=')[1])
+                        elif parameter.split('=')[0] == '-u':
+                            self.dest_user = parameter.split('=')[1]
+
+                elif '--d' in arg and arg.count('--d') == 1:
+                    self.databaseName = str(sys.argv[sys.argv.index('--d')+1])
+
+                if '--t' in arg and arg.count('--t') == 1:
+                    for _tableName in sys.argv[sys.argv.index('--t')+1].split(','):
+                        self.tableName.append(_tableName)
+
+                if '--n' in arg and arg.count('--n') == 1:
+                    self.syncNumber = int(sys.argv[sys.argv.index('--n') + 1])
+                if '--help' in arg and arg.count('--help') == 1:
+                    self.printParameter()
+        except Exception as result:
+            print("参数输入错误，请使用--help查看使用说明")
+
+    def dbConnect(self,host,user,port,password,db='',sql='',charset='utf8'):
+        """连接DB，获取用户输入的源目地址，密码等信息"""
+        try:
+           conn = mysqldb.connect(
+               host=host,
+               user=user,
+               port=port,
+               passwd=password,
+               db=db,
+               charset=charset
+                           )
+           cur = conn.cursor()
+           cur.execute(sql)
+           data = cur.fetchall()
+           conn.commit()
+           conn.close()
+           return data
+        except AttributeError:
+            print('请配置数据库的源信息和目标信息')
+            data = ''
+            return data
+
+    def sourceDbConnect(self,sql):
+        date = self.dbConnect(self.source_host,self.source_user,self.source_port,self.source_password,db=self.databaseName,sql=sql)
+        return date
+
+    def destDbConnect(self,sql):
+        date = self.dbConnect(self.dest_host, self.dest_user, self.dest_port, self.dest_password, db=self.databaseName,sql=sql)
+        return date
+
+    def DBtableName(self):
+        if len(self.tableName) == 0:
+            showTableNameSql = 'show tables;'
+            tableNamedate = self.sourceDbConnect(showTableNameSql)
+            for _tableName in tableNamedate:
+                self.tableName.append(_tableName[0].encode('utf-8'))
+
+    def tableStructureField(self,tableName):
+            queryTableStructureSql = 'show columns from %s;' %tableName
+            tableStructureDate=self.sourceDbConnect(queryTableStructureSql)
+            self.tableStructureString = ''
+            self.tableStructureDict = {}
+            for _tableStructure in tableStructureDate:
+                self.tableStructureList.append(_tableStructure[0].encode('utf-8'))
+                self.tableStructureList.append(str(_tableStructure[1].encode('utf-8').split('(')[0]))
+                self.tableStructureList.append(str(_tableStructure[3].encode('utf-8').split('(')[0]))
+                self.tableStructureString += _tableStructure[0].encode('utf-8') +','
+            self.tableStructureString = self.tableStructureString[:-1]
+
+    def tableStructureFieldPrimaryId(self,tableName):
+            queryTableStructureSql = 'show columns from %s;' %tableName
+            tableStructureDate=self.sourceDbConnect(queryTableStructureSql)
+            self.primaryKeyId = ''
+            self.primaryKeyIdDict = {}
+            self.primaryKeyIdList = []
+            for _tableStructure in tableStructureDate:
+                self.primaryKeyIdList.append(_tableStructure[0].encode('utf-8'))
+                self.primaryKeyIdList.append(str(_tableStructure[3].encode('utf-8').split('(')[0]))
+
+            self.primaryKeyIdDict = dict(zip(self.primaryKeyIdList[::2],self.primaryKeyIdList[1::2]))
+
+            for _PrimaryId,v in self.primaryKeyIdDict.items():
+                if v.startswith('PRI'):
+                    self.primaryKeyId = _PrimaryId
+            if self.primaryKeyId == '':
+                ErrorInfo = '%s没有主键，无法进行数据同步' %(tableName)
+                print(ErrorInfo)
+
+    def tableStructureCheck(self,tablename):
+        showTable = 'show tables;'
+        sourceTableDate = self.sourceDbConnect(showTable)
+        destTableDate = self.destDbConnect(showTable)
+        for tableName in sourceTableDate:
+            self.sourceTableList.append(str(tableName[0]))
+        for tableName in destTableDate:
+            self.destTableList.append(str(tableName[0]))
+        '判断self.sourceTableLish和self.destTableList的交集与差集，用于判断两库的表是否都存在，以源库为准，目标库不存在则创建'
+        '1）先判断交集'
+        dataIntersection = list(set(self.sourceTableList).intersection(set(self.destTableList)))
+        '2)差集'
+        dataDifference = list(set(self.sourceTableList).difference(set(self.destTableList)))
+
+        '3)判断指定的表是否在源目库中'
+        '判断源目表是否存在，如果存在，判断表结构是否相同，不相同则报错'
+        queryCreateTableSql = 'show create table %s;' % tablename
+        if tablename in self.sourceTableList:
+            print("%s表在源库中已存在" %tablename)
+            sourceCreateTableSql = self.sourceDbConnect(queryCreateTableSql)
+            for sql in sourceCreateTableSql:
+                sourceCreateTableDate = sql[1].encode('utf-8').partition('ENGINE=')[0]
+            if tablename in self.destTableList:
+                destCreateTableSql = self.destDbConnect(queryCreateTableSql)
+                for sql in destCreateTableSql:
+                    destCreateTableDate = sql[1].encode('utf-8').partition('ENGINE=')[0]
+                print("%s表在目标库中存在,开始校验表结构" % tablename)
+                if sourceCreateTableDate == destCreateTableDate:
+                    print("源库的表结构和目标库的结构相同，开始检查主键")
+                else:
+                    print("源库的表结构和目标库的表结构不相同,请检查表结构")
+            else:
+                print("%s表在目标库中不存在，开始创建表结构" % tablename)
+                destcreateTableSql = sql[1].encode('utf-8') + ';'
+                self.destDbConnect(destcreateTableSql)
+        else:
+            print("%s表在源库中不存在，请检查源表名配置是否正确")
+
+    def tableDatacycleInsert(self,tableName,sourceTableMaxId,destTableMaxId,syncNumber):
+        destTableMax = syncNumber
+        while destTableMaxId <= sourceTableMaxId:
+                self.tableValue(tableName,self.primaryKeyId,destTableMaxId,destTableMax)
+                destTableMaxId += syncNumber
+                destTableMaxId = int(destTableMaxId)
+                destTableMax = ''
+                destTableMax = int(destTableMaxId) + int(syncNumber)
+                destTableMax = int(destTableMax)
+
+
+    def tableValue(self,tableName,primaryKeyId,destTableMaxId,syncNumber):
+        if self.primaryKeyId == '':
+            queryDateSql = ''
+        else:
+            queryDateSql = 'select * from %s where %s >= %s and %s <= %s;' % (tableName, primaryKeyId, destTableMaxId, primaryKeyId, syncNumber)
+            tableValueDate = self.sourceDbConnect(queryDateSql)
+            self.destDatabaseForeignKey()
+            if len(tableValueDate) == 0:
+                self.tableValueList = ['']
+                print('%s数据为空或数据已存在' %tableName)
+
+            else:
+                for _tableValue in tableValueDate:
+
+                    self.tableValueString = ''
+                    for i in range(len(_tableValue)):
+                        self.tableValueString += "\"" + str(_tableValue[i]).replace("\"","\'") + '\"' + ','
+                        #self.tableValueString += "\'" + str(_tableValue[i]) + '\'' + ','
+                    self.tableValueString = ('(' + self.tableValueString)[:-1] + ')'
+                    self.destDatabaseInsert(tableName)
+
+    def destDatabaseForeignKey(self):
+                mysqlShowCompatibility = 'set global show_compatibility_56=on;'
+                offForeignKeySql = 'SET GLOBAL FOREIGN_KEY_CHECKS = 0;'
+                self.destDbConnect(offForeignKeySql)
+                self.destDbConnect(mysqlShowCompatibility)
+
+    def destDatabaseInsert(self,tableName):
+                if len(self.tableValueString) > 2:
+                    insertSql = 'replace  into ' + tableName + '(' + self.tableStructureString + ')' +' ' + 'values' + self.tableValueString + ';'
+                    print(insertSql)
+
+                else:
+                    insertSql = ''
+                self.destDbConnect(insertSql)
+
+    def destTableMaxId(self,primaryKeyId,tablename):
+        if self.primaryKeyId == '':
+            selectIdSql = ''
+        else:
+            selectIdSql = 'select %s from %s order by %s desc limit 1;' % (primaryKeyId,tablename,primaryKeyId)
+
+            destTableMaxIdDate = self.destDbConnect(selectIdSql)
+
+            if destTableMaxIdDate:
+                for _destTableMaxId in destTableMaxIdDate:
+                    self.destTableMax_Id = int(_destTableMaxId[0]) +1
+
+            else:
+                self.destTableMax_Id = 1
+                self.destTableMax_Id = int(self.destTableMax_Id)
+            return self.destTableMax_Id
+
+
+
+    def sourceTableMaxId(self,primaryKeyId,tablename):
+
+        if self.primaryKeyId == '':
+            selectIdSql = ''
+        else:
+            selectIdSql = 'select %s from %s order by %s desc limit 1;' % (primaryKeyId,tablename,primaryKeyId)
+
+            sourceTableMaxIdDate = self.sourceDbConnect(selectIdSql)
+
+            if sourceTableMaxIdDate:
+                for _sourceTableMaxId in sourceTableMaxIdDate:
+                    self.sourceTableMax_Id = int(_sourceTableMaxId[0])
+
+            else:
+                self.sourceTableMax_Id = 1
+                self.sourceTableMax_Id = int(self.sourceTableMax_Id)
+
+            return self.sourceTableMax_Id
+
+    def tableDate(self):
+        """根据Dest库的表中主键id去查询source库相应表的id数据，分批次读取数据，并生成sql语句"""
+        '1、判断目标库的字段是否为空，为空最大值0，不为空，读取最大值'
+
+        for _tableName in self.tableName:
+            self.tableStructureCheck(_tableName)
+            self.tableStructureFieldPrimaryId(_tableName)
+
+            destTableMaxId = self.destTableMaxId(self.primaryKeyId,_tableName)
+            sourceTableMaxId = self.sourceTableMaxId(self.primaryKeyId,_tableName)
+            self.tableStructureField(_tableName)
+
+            '3、读取源库表数据'
+            self.tableDatacycleInsert(_tableName,sourceTableMaxId,destTableMaxId,self.syncNumber)
+            print('(%s) 表数据同步完成' %_tableName)
+            print('\n')
+
+go = datesync()
+go.tableDate()
